@@ -73,6 +73,40 @@ void block_sum_reduce(unsigned int* const d_block_sums,
 	}
 }
 
+__global__ void reduce0(int* g_idata, int*g_odata) {
+	extern __shared__ int sdata[];
+
+	// each thread loads one element from global to shared mem
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+	sdata[tid] = g_idata[i];
+	__syncthreads();
+
+	// do reduction in shared mem
+	for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+		if (tid % (2 * s) == 0) {
+			sdata[tid] += sdata[tid + s];
+		}
+		__syncthreads();
+	}
+
+	// write result for this block to global mem
+	if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+void print_d_array(unsigned int* d_array, unsigned int len)
+{
+	unsigned int* h_array = new unsigned int[len];
+	checkCudaErrors(cudaMemcpy(h_array, d_array, sizeof(unsigned int) * len, cudaMemcpyDeviceToHost));
+	for (unsigned int i = 0; i < len; ++i)
+	{
+		std::cout << h_array[i] << " ";
+	}
+	std::cout << std::endl;
+
+	delete[] h_array;
+}
+
 unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 {
 	unsigned int total_sum = 0;
@@ -92,6 +126,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 
 	// Sum data allocated for each block
 	block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
+	//print_d_array(d_block_sums, grid_sz);
 
 	// Sum each block's total sums (to get global total sum)
 	// Use basic implementation if number of total sums is <= 2048
@@ -110,7 +145,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 		unsigned int* d_in_block_sums;
 		checkCudaErrors(cudaMalloc(&d_in_block_sums, sizeof(unsigned int) * grid_sz));
 		checkCudaErrors(cudaMemcpy(d_in_block_sums, d_block_sums, sizeof(unsigned int) * grid_sz, cudaMemcpyDeviceToDevice));
-		total_sum = gpu_sum_reduce(d_in_block_sums, grid_sz);
+		total_sum += gpu_sum_reduce(d_in_block_sums, grid_sz);
 		checkCudaErrors(cudaFree(d_in_block_sums));
 	}
 

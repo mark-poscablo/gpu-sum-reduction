@@ -33,9 +33,10 @@ int main()
 	std::clock_t start;
 	double duration;
 
-	unsigned int h_in_len = (1 << 26);
+	unsigned int h_in_len = (1 << 29);
 	unsigned int* h_in = new unsigned int[h_in_len];
 	generate_input(h_in, h_in_len);
+	std::cout << h_in[h_in_len - 1] << std::endl;
 	//for (unsigned int i = 0; i < input_len; ++i)
 	//{
 	//	std::cout << input[i] << " ";
