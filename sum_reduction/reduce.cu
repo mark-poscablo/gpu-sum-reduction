@@ -73,6 +73,11 @@ void block_sum_reduce(unsigned int* const d_block_sums,
 	}
 }
 
+// On my current laptop with GTX 850M, theoretical peak bandwidth is 14.4 GB/s
+// Succeeding measurements are for the Release build
+
+// Bandwidth: (((2^27) + 1) unsigned ints * 4 bytes/unsigned int)/(173.444 * 10^-3 s)
+//  3.095 GB/S = 21.493% -> bad kernel memory bandwidth
 __global__ void reduce0(unsigned int* g_odata, unsigned int* g_idata, unsigned int len) {
 	extern __shared__ unsigned int sdata[];
 
@@ -99,6 +104,39 @@ __global__ void reduce0(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 
 	// write result for this block to global mem
 	if (tid == 0) 
+		g_odata[blockIdx.x] = sdata[0];
+}
+
+// Bandwidth: (((2^27) + 1) unsigned ints * 4 bytes/unsigned int)/(81.687 * 10^-3 s)
+//  6.572 GB/S = 45.639% -> bad kernel memory bandwidth, but better than last time
+__global__ void reduce1(unsigned int* g_odata, unsigned int* g_idata, unsigned int len) {
+	extern __shared__ unsigned int sdata[];
+
+	// each thread loads one element from global to shared mem
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+
+	sdata[tid] = 0;
+
+	if (i < len)
+	{
+		sdata[tid] = g_idata[i];
+	}
+
+	__syncthreads();
+
+	// do reduction in shared mem
+	for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+		unsigned int index = 2 * s * tid;
+
+		if (index < blockDim.x) {
+			sdata[index] += sdata[index + s];
+		}
+		__syncthreads();
+	}
+
+	// write result for this block to global mem
+	if (tid == 0)
 		g_odata[blockIdx.x] = sdata[0];
 }
 
@@ -148,7 +186,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 
 	// Sum data allocated for each block
 	//block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
-	reduce0<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
+	reduce1<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
 	//print_d_array(d_block_sums, grid_sz);
 
 	// Sum each block's total sums (to get global total sum)
@@ -160,7 +198,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 		checkCudaErrors(cudaMalloc(&d_total_sum, sizeof(unsigned int)));
 		checkCudaErrors(cudaMemset(d_total_sum, 0, sizeof(unsigned int)));
 		//block_sum_reduce<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
-		reduce0<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
+		reduce1<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
 		checkCudaErrors(cudaMemcpy(&total_sum, d_total_sum, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 		checkCudaErrors(cudaFree(d_total_sum));
 	}
