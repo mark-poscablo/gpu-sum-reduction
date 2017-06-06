@@ -80,10 +80,13 @@ __global__ void reduce0(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 	unsigned int tid = threadIdx.x;
 	unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= len)
-		return;
+	sdata[tid] = 0;
 
-	sdata[tid] = g_idata[i];
+	if (i < len)
+	{
+		sdata[tid] = g_idata[i];
+	}
+
 	__syncthreads();
 
 	// do reduction in shared mem
@@ -95,7 +98,8 @@ __global__ void reduce0(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 	}
 
 	// write result for this block to global mem
-	if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+	if (tid == 0) 
+		g_odata[blockIdx.x] = sdata[0];
 }
 
 void print_d_array(unsigned int* d_array, unsigned int len)
@@ -119,8 +123,22 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 	// If input size is not power of two, the remainder will still need a whole block
 	// Thus, number of blocks must be the least number of 2048-blocks greater than the input size
 	unsigned int block_sz = MAX_BLOCK_SZ;
-	unsigned int max_elems_per_block = block_sz * 2; // due to binary tree nature of algorithm
-	unsigned int grid_sz = (unsigned int)std::ceil(float(d_in_len) / float(max_elems_per_block));
+	// our block_sum_reduce()
+	//unsigned int max_elems_per_block = block_sz * 2; // due to binary tree nature of algorithm
+	// NVIDIA's reduceX()
+	unsigned int max_elems_per_block = block_sz;
+	
+	unsigned int grid_sz = 0;
+	if (d_in_len <= max_elems_per_block)
+	{
+		grid_sz = (unsigned int)std::ceil(float(d_in_len) / float(max_elems_per_block));
+	}
+	else
+	{
+		grid_sz = d_in_len / max_elems_per_block;
+		if (d_in_len % max_elems_per_block != 0)
+			grid_sz++;
+	}
 
 	// Allocate memory for array of total sums produced by each block
 	// Array length must be the same as number of blocks / grid size
@@ -129,18 +147,20 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 	checkCudaErrors(cudaMemset(d_block_sums, 0, sizeof(unsigned int) * grid_sz));
 
 	// Sum data allocated for each block
-	reduce0<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
+	//block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
+	reduce0<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
 	//print_d_array(d_block_sums, grid_sz);
 
 	// Sum each block's total sums (to get global total sum)
 	// Use basic implementation if number of total sums is <= 2048
 	// Else, recurse on this same function
-	if (grid_sz <= 2048)
+	if (grid_sz <= max_elems_per_block)
 	{
 		unsigned int* d_total_sum;
 		checkCudaErrors(cudaMalloc(&d_total_sum, sizeof(unsigned int)));
 		checkCudaErrors(cudaMemset(d_total_sum, 0, sizeof(unsigned int)));
-		reduce0<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
+		//block_sum_reduce<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
+		reduce0<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
 		checkCudaErrors(cudaMemcpy(&total_sum, d_total_sum, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 		checkCudaErrors(cudaFree(d_total_sum));
 	}
@@ -149,7 +169,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 		unsigned int* d_in_block_sums;
 		checkCudaErrors(cudaMalloc(&d_in_block_sums, sizeof(unsigned int) * grid_sz));
 		checkCudaErrors(cudaMemcpy(d_in_block_sums, d_block_sums, sizeof(unsigned int) * grid_sz, cudaMemcpyDeviceToDevice));
-		total_sum += gpu_sum_reduce(d_in_block_sums, grid_sz);
+		total_sum = gpu_sum_reduce(d_in_block_sums, grid_sz);
 		checkCudaErrors(cudaFree(d_in_block_sums));
 	}
 
