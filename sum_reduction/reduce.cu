@@ -226,6 +226,53 @@ __global__ void reduce3(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 		g_odata[blockIdx.x] = sdata[0];
 }
 
+// Bandwidth: (((2^27) + 1) unsigned ints * 4 bytes/unsigned int)/(37.255 * 10^-3 s)
+//  14.411 GB/s = 100% -> perfect bandwidth? is this even possible?
+__global__ void reduce4(unsigned int* g_odata, unsigned int* g_idata, unsigned int len) {
+	extern __shared__ unsigned int sdata[];
+
+	// each thread loads one element from global to shared mem
+	// Do the first stage of the reduction on the global-to-shared load step
+	// This reduces the previous inefficiency of having half of the threads being
+	//  inactive on the first for-loop iteration below (previous first step of reduction)
+	// Previously, only less than or equal to 512 out of 1024 threads in a block are active.
+	// Now, all 512 threads in a block are active from the start
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+	sdata[tid] = 0;
+
+	if (i < len)
+	{
+		sdata[tid] = g_idata[i] + g_idata[i + blockDim.x];
+	}
+
+	__syncthreads();
+
+	// do reduction in shared mem
+	// this loop now starts with s = 512 / 2 = 256
+	for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+		if (tid < s) {
+			sdata[tid] += sdata[tid + s];
+		}
+		__syncthreads();
+	}
+
+	if (tid < 32)
+	{
+		sdata[tid] += sdata[tid + 32];
+		sdata[tid] += sdata[tid + 16];
+		sdata[tid] += sdata[tid + 8];
+		sdata[tid] += sdata[tid + 4];
+		sdata[tid] += sdata[tid + 2];
+		sdata[tid] += sdata[tid + 1];
+	}
+
+	// write result for this block to global mem
+	if (tid == 0)
+		g_odata[blockIdx.x] = sdata[0];
+}
+
 void print_d_array(unsigned int* d_array, unsigned int len)
 {
 	unsigned int* h_array = new unsigned int[len];
@@ -273,7 +320,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 
 	// Sum data allocated for each block
 	//block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
-	reduce3<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
+	reduce4<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
 	//print_d_array(d_block_sums, grid_sz);
 
 	// Sum each block's total sums (to get global total sum)
@@ -285,7 +332,7 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 		checkCudaErrors(cudaMalloc(&d_total_sum, sizeof(unsigned int)));
 		checkCudaErrors(cudaMemset(d_total_sum, 0, sizeof(unsigned int)));
 		//block_sum_reduce<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
-		reduce3<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
+		reduce4<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
 		checkCudaErrors(cudaMemcpy(&total_sum, d_total_sum, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 		checkCudaErrors(cudaFree(d_total_sum));
 	}
