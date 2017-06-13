@@ -13,64 +13,79 @@ void block_sum_reduce(unsigned int* const d_block_sums,
 {
 	extern __shared__ unsigned int s_out[];
 
-	unsigned int glbl_t_idx = blockDim.x * blockIdx.x + threadIdx.x;
-
+	unsigned int max_elems_per_block = blockDim.x * 2;
+	unsigned int glbl_tid = blockDim.x * blockIdx.x + threadIdx.x;
+	unsigned int tid = threadIdx.x;
+	
 	// Zero out shared memory
 	// Especially important when padding shmem for
 	//  non-power of 2 sized input
-	s_out[2 * threadIdx.x] = 0;
-	s_out[2 * threadIdx.x + 1] = 0;
+	s_out[threadIdx.x] = 0;
+	s_out[threadIdx.x + blockDim.x] = 0;
 
 	__syncthreads();
 
 	// Copy d_in to shared memory per block
-	if (2 * glbl_t_idx < d_in_len)
+	if (glbl_tid < d_in_len)
 	{
-		s_out[2 * threadIdx.x] = d_in[2 * glbl_t_idx];
-		if (2 * glbl_t_idx + 1 < d_in_len)
-			s_out[2 * threadIdx.x + 1] = d_in[2 * glbl_t_idx + 1];
+		s_out[threadIdx.x] = d_in[glbl_tid];
+		if (glbl_tid + blockDim.x < d_in_len)
+			s_out[threadIdx.x + blockDim.x] = d_in[glbl_tid + blockDim.x];
 	}
 
 	__syncthreads();
 
-	// 2^11 = 2048, the max amount of data a block can blelloch scan
-	unsigned int max_steps = 11;
+	//// 2^11 = 2048, the max amount of data a block can blelloch scan
+	//unsigned int max_steps = 11;
 
-	unsigned int r_idx = 0;
-	unsigned int l_idx = 0;
-	unsigned int sum = 0; // global sum can be passed to host if needed
-	unsigned int t_active = 0;
-	for (unsigned int s = 0; s < max_steps; ++s)
-	{
-		t_active = 0;
+	//unsigned int r_idx = 0;
+	//unsigned int l_idx = 0;
+	//unsigned int sum = 0; // global sum can be passed to host if needed
+	//unsigned int t_active = 0;
+	//for (unsigned int s = 0; s < max_steps; ++s)
+	//{
+	//	t_active = 0;
 
-		// calculate necessary indexes
-		// right index must be (t+1) * 2^(s+1)) - 1
-		r_idx = ((threadIdx.x + 1) * (1 << (s + 1))) - 1;
-		if (r_idx >= 0 && r_idx < 2048)
-			t_active = 1;
+	//	// calculate necessary indexes
+	//	// right index must be (t+1) * 2^(s+1)) - 1
+	//	r_idx = ((threadIdx.x + 1) * (1 << (s + 1))) - 1;
+	//	if (r_idx >= 0 && r_idx < 2048)
+	//		t_active = 1;
 
-		if (t_active)
-		{
-			// left index must be r_idx - 2^s
-			l_idx = r_idx - (1 << s);
+	//	if (t_active)
+	//	{
+	//		// left index must be r_idx - 2^s
+	//		l_idx = r_idx - (1 << s);
 
-			// do the actual add operation
-			sum = s_out[l_idx] + s_out[r_idx];
+	//		// do the actual add operation
+	//		sum = s_out[l_idx] + s_out[r_idx];
+	//	}
+	//	__syncthreads();
+
+	//	if (t_active)
+	//		s_out[r_idx] = sum;
+	//	__syncthreads();
+	//}
+
+	//// Copy last element (total sum of block) to block sums array
+	//// Then, reset last element to operation's identity (sum, 0)
+	//if (threadIdx.x == 0)
+	//{
+	//	d_block_sums[blockIdx.x] = s_out[r_idx];
+	//}
+
+	for (unsigned int s = 1; s < max_elems_per_block; s *= 2) {
+		unsigned int index = (2 * s) * tid;
+
+		if (index < max_elems_per_block) {
+			s_out[index] += s_out[index + s];
 		}
 		__syncthreads();
-
-		if (t_active)
-			s_out[r_idx] = sum;
-		__syncthreads();
 	}
 
-	// Copy last element (total sum of block) to block sums array
-	// Then, reset last element to operation's identity (sum, 0)
-	if (threadIdx.x == 0)
-	{
-		d_block_sums[blockIdx.x] = s_out[r_idx];
-	}
+	// write result for this block to global mem
+	if (tid == 0)
+		d_block_sums[blockIdx.x] = s_out[0];
 }
 
 // On my current laptop with GTX 850M, theoretical peak bandwidth is 14.4 GB/s
@@ -100,7 +115,7 @@ __global__ void reduce0(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 	//  because threads are active/inactive according to their thread IDs
 	//  being powers of two. The if conditional here is guaranteed to diverge
 	//  threads within a warp.
-	for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+	for (unsigned int s = 1; s < 2048; s <<= 2) {
 		if (tid % (2 * s) == 0) {
 			sdata[tid] += sdata[tid + s];
 		}
@@ -293,12 +308,12 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 	// Set up number of threads and blocks
 	// If input size is not power of two, the remainder will still need a whole block
 	// Thus, number of blocks must be the least number of 2048-blocks greater than the input size
-	unsigned int block_sz = MAX_BLOCK_SZ / 2; // Halve the block size due to reduce3() and further 
+	unsigned int block_sz = MAX_BLOCK_SZ; // Halve the block size due to reduce3() and further 
 											  //  optimizations from there
 	// our block_sum_reduce()
-	//unsigned int max_elems_per_block = block_sz * 2; // due to binary tree nature of algorithm
+	unsigned int max_elems_per_block = block_sz * 2; // due to binary tree nature of algorithm
 	// NVIDIA's reduceX()
-	unsigned int max_elems_per_block = block_sz;
+	//unsigned int max_elems_per_block = block_sz;
 	
 	unsigned int grid_sz = 0;
 	if (d_in_len <= max_elems_per_block)
@@ -319,8 +334,8 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 	checkCudaErrors(cudaMemset(d_block_sums, 0, sizeof(unsigned int) * grid_sz));
 
 	// Sum data allocated for each block
-	//block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
-	reduce4<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
+	block_sum_reduce<<<grid_sz, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_in, d_in_len);
+	//reduce4<<<grid_sz, block_sz, sizeof(unsigned int) * block_sz>>>(d_block_sums, d_in, d_in_len);
 	//print_d_array(d_block_sums, grid_sz);
 
 	// Sum each block's total sums (to get global total sum)
@@ -331,8 +346,8 @@ unsigned int gpu_sum_reduce(unsigned int* d_in, unsigned int d_in_len)
 		unsigned int* d_total_sum;
 		checkCudaErrors(cudaMalloc(&d_total_sum, sizeof(unsigned int)));
 		checkCudaErrors(cudaMemset(d_total_sum, 0, sizeof(unsigned int)));
-		//block_sum_reduce<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
-		reduce4<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
+		block_sum_reduce<<<1, block_sz, sizeof(unsigned int) * max_elems_per_block>>>(d_total_sum, d_block_sums, grid_sz);
+		//reduce4<<<1, block_sz, sizeof(unsigned int) * block_sz>>>(d_total_sum, d_block_sums, grid_sz);
 		checkCudaErrors(cudaMemcpy(&total_sum, d_total_sum, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 		checkCudaErrors(cudaFree(d_total_sum));
 	}

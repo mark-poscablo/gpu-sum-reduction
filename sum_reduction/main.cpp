@@ -38,7 +38,6 @@ int main()
 		unsigned int h_in_len = (1 << k);
 		//unsigned int h_in_len = 2048;
 		std::cout << "h_in_len: " << h_in_len << std::endl;
-		//unsigned int h_in_len = 2048;
 		unsigned int* h_in = new unsigned int[h_in_len];
 		generate_input(h_in, h_in_len);
 		//for (unsigned int i = 0; i < input_len; ++i)
