@@ -33,7 +33,7 @@ int main()
 	std::clock_t start;
 	double duration;
 
-	for (int k = 27; k < 28; ++k)
+	for (int k = 1; k < 28; ++k)
 	{
 		unsigned int h_in_len = (1 << k);
 		//unsigned int h_in_len = 2048;

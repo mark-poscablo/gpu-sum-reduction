@@ -6,6 +6,13 @@
 #include "device_launch_parameters.h"
 #include "utils.h"
 
+// Bandwidth: (((2^27) + 1) unsigned ints * 4 bytes/unsigned int)/(38.716 * 10^-3 s)
+//  13.867 GB/s = 96.297% -> excellent memory bandwidth
+// Reasonable point to stop working on this implementation's optimization
+// Algorithm is not compute-intensive, so acheiving >75% of theoretical bandwidth is goal
+// Main strategies used:
+// - Process as much data as possible (in terms of algorithm correctness) in shared memory
+// - Use sequential addressing to get rid of bank conflicts
 __global__
 void block_sum_reduce(unsigned int* const d_block_sums, 
 	const unsigned int* const d_in,
@@ -32,53 +39,12 @@ void block_sum_reduce(unsigned int* const d_block_sums,
 		if (glbl_tid + blockDim.x < d_in_len)
 			s_out[threadIdx.x + blockDim.x] = d_in[glbl_tid + blockDim.x];
 	}
-
 	__syncthreads();
 
-	//// 2^11 = 2048, the max amount of data a block can blelloch scan
-	//unsigned int max_steps = 11;
-
-	//unsigned int r_idx = 0;
-	//unsigned int l_idx = 0;
-	//unsigned int sum = 0; // global sum can be passed to host if needed
-	//unsigned int t_active = 0;
-	//for (unsigned int s = 0; s < max_steps; ++s)
-	//{
-	//	t_active = 0;
-
-	//	// calculate necessary indexes
-	//	// right index must be (t+1) * 2^(s+1)) - 1
-	//	r_idx = ((threadIdx.x + 1) * (1 << (s + 1))) - 1;
-	//	if (r_idx >= 0 && r_idx < 2048)
-	//		t_active = 1;
-
-	//	if (t_active)
-	//	{
-	//		// left index must be r_idx - 2^s
-	//		l_idx = r_idx - (1 << s);
-
-	//		// do the actual add operation
-	//		sum = s_out[l_idx] + s_out[r_idx];
-	//	}
-	//	__syncthreads();
-
-	//	if (t_active)
-	//		s_out[r_idx] = sum;
-	//	__syncthreads();
-	//}
-
-	//// Copy last element (total sum of block) to block sums array
-	//// Then, reset last element to operation's identity (sum, 0)
-	//if (threadIdx.x == 0)
-	//{
-	//	d_block_sums[blockIdx.x] = s_out[r_idx];
-	//}
-
-	for (unsigned int s = 1; s < max_elems_per_block; s *= 2) {
-		unsigned int index = (2 * s) * tid;
-
-		if (index < max_elems_per_block) {
-			s_out[index] += s_out[index + s];
+	// Actually do the reduction
+	for (unsigned int s = blockDim.x; s > 0; s >>= 1) {
+		if (tid < s) {
+			s_out[tid] += s_out[tid + s];
 		}
 		__syncthreads();
 	}
