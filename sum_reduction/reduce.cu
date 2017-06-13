@@ -209,6 +209,7 @@ __global__ void reduce3(unsigned int* g_odata, unsigned int* g_idata, unsigned i
 
 // Bandwidth: (((2^27) + 1) unsigned ints * 4 bytes/unsigned int)/(37.255 * 10^-3 s)
 //  14.411 GB/s = 100% -> perfect bandwidth? is this even possible?
+// ***In my laptop, measurements are wrong since the release version oddly outputs an incorrect value***
 __global__ void reduce4(unsigned int* g_odata, unsigned int* g_idata, unsigned int len) {
 	extern __shared__ unsigned int sdata[];
 
