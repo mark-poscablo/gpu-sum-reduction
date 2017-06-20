@@ -1,3 +1,5 @@
+// Originally from Udacity (https://github.com/udacity/cs344). Used only for educational purposes
+
 #ifndef UTILS_H__
 #define UTILS_H__
 
