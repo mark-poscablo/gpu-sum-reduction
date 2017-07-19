@@ -1,4 +1,5 @@
-// Originally from Udacity (https://github.com/udacity/cs344). Used only for educational purposes
+// Originally from Udacity (https://www.udacity.com/course/intro-to-parallel-programming--cs344)
+// Used only for educational purposes
 
 #ifndef UTILS_H__
 #define UTILS_H__
@@ -44,8 +45,13 @@ void checkResultsEps(const T* const ref, const T* const gpu, size_t numElem, dou
   unsigned numSmallDifferences = 0;
   for (size_t i = 0; i < numElem; ++i) {
     //subtract smaller from larger in case of unsigned types
+    #ifdef _WIN32
     T smaller = std::fmin(ref[i], gpu[i]);
     T larger = std::fmax(ref[i], gpu[i]);
+    #else
+    T smaller = std::min(ref[i], gpu[i]);
+    T larger = std::max(ref[i], gpu[i]);
+    #endif
     T diff = larger - smaller;
     if (diff > 0 && diff <= eps1) {
       numSmallDifferences++;
@@ -74,8 +80,13 @@ void checkResultsAutodesk(const T* const ref, const T* const gpu, size_t numElem
 
   size_t numBadPixels = 0;
   for (size_t i = 0; i < numElem; ++i) {
+    #ifdef _WIN32
     T smaller = std::fmin(ref[i], gpu[i]);
     T larger = std::fmax(ref[i], gpu[i]);
+    #else
+    T smaller = std::min(ref[i], gpu[i]);
+    T larger = std::max(ref[i], gpu[i]);
+    #endif
     T diff = larger - smaller;
     if (diff > variance)
       ++numBadPixels;
